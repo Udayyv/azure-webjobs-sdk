@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -32,7 +33,7 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
         private readonly ILoggerFactory _loggerFactory;
         private readonly ILogger _resultsLogger;
         private readonly IEnumerable<IFunctionFilter> _globalFunctionFilters;
-
+        
         private readonly Dictionary<string, object> _inputBindingScope = new Dictionary<string, object>
         {
             [LogConstants.CategoryNameKey] = LogCategories.Bindings,
@@ -73,48 +74,27 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
             set { _hostOutputMessage = value; }
         }
 
-        public async Task<IDelayedException> TryExecuteAsync(IFunctionInstance instance, CancellationToken cancellationToken)
+        public async Task<IDelayedException> TryExecuteAsync(IFunctionInstance functionInstance, CancellationToken cancellationToken)
         {
-            bool ownsInstance = false;
+            var functionInstanceEx = (IFunctionInstanceEx)functionInstance;
 
-            if (!(instance is IFunctionInstanceEx functionInstance))
-            {
-                functionInstance = new FunctionInstanceWrapper(instance, _serviceScopeFactory);
-                ownsInstance = true;
-            }
+            ILogger logger = _loggerFactory?.CreateLogger(LogCategories.CreateFunctionCategory(functionInstanceEx.FunctionDescriptor.LogName));
 
-            try
-            {
-                return await TryExecuteAsyncCore(functionInstance, cancellationToken);
-            }
-            finally
-            {
-                if (ownsInstance)
-                {
-                    (functionInstance as IDisposable)?.Dispose();
-                }
-            }
-        }
-
-        private async Task<IDelayedException> TryExecuteAsyncCore(IFunctionInstanceEx functionInstance, CancellationToken cancellationToken)
-        {
-            ILogger logger = _loggerFactory?.CreateLogger(LogCategories.CreateFunctionCategory(functionInstance.FunctionDescriptor.LogName));
-
-            FunctionStartedMessage functionStartedMessage = CreateStartedMessageWithoutArguments(functionInstance);
-            var parameterHelper = new ParameterHelper(functionInstance);
+            FunctionStartedMessage functionStartedMessage = CreateStartedMessageWithoutArguments(functionInstanceEx);
+            var parameterHelper = new ParameterHelper(functionInstanceEx);
             FunctionCompletedMessage functionCompletedMessage = null;
             ExceptionDispatchInfo exceptionInfo = null;
             string functionStartedMessageId = null;
             FunctionInstanceLogEntry instanceLogEntry = null;
 
-            using (_resultsLogger?.BeginFunctionScope(functionInstance, HostOutputMessage.HostInstanceId))
+            using (_resultsLogger?.BeginFunctionScope(functionInstanceEx, HostOutputMessage.HostInstanceId))
             using (parameterHelper)
             {
                 try
                 {
                     instanceLogEntry = await NotifyPreBindAsync(functionStartedMessage);
                     parameterHelper.Initialize();
-                    functionStartedMessageId = await ExecuteWithLoggingAsync(functionInstance, functionStartedMessage, instanceLogEntry, parameterHelper, logger, cancellationToken);
+                    functionStartedMessageId = await ExecuteWithLoggingAsync(functionInstanceEx, functionStartedMessage, instanceLogEntry, parameterHelper, logger, cancellationToken);
                     functionCompletedMessage = CreateCompletedMessage(functionStartedMessage);
                 }
                 catch (Exception exception)
@@ -132,7 +112,7 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
                     };
 
                     exceptionInfo = ExceptionDispatchInfo.Capture(exception);
-                    exceptionInfo = await InvokeExceptionFiltersAsync(parameterHelper.JobInstance, exceptionInfo, functionInstance, parameterHelper.FilterContextProperties, logger, cancellationToken);
+                    exceptionInfo = await InvokeExceptionFiltersAsync(parameterHelper.JobInstance, exceptionInfo, functionInstanceEx, parameterHelper.FilterContextProperties, logger, cancellationToken);
                 }
 
                 if (functionCompletedMessage != null)
@@ -172,7 +152,7 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
 
             if (exceptionInfo != null)
             {
-                await HandleExceptionAsync(functionInstance.FunctionDescriptor.TimeoutAttribute, exceptionInfo, _exceptionHandler);
+                await HandleExceptionAsync(functionInstanceEx.FunctionDescriptor.TimeoutAttribute, exceptionInfo, _exceptionHandler);
             }
 
             return exceptionInfo != null ? new ExceptionDispatchInfoDelayedException(exceptionInfo) : null;
@@ -539,28 +519,29 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
             CancellationTokenSource functionCancellationTokenSource, bool throwOnTimeout, TimeSpan timerInterval, IFunctionInstance instance)
         {
             object[] invokeParameters = parameterHelper.InvokeParameters;
-
-            // There are three ways the function can complete:
-            //   1. The invokeTask itself completes first.
-            //   2. A cancellation is requested (by host.Stop(), for example).
-            //      a. Continue waiting for the invokeTask to complete. Either #1 or #3 will occur.
-            //   3. A timeout fires.
-            //      a. If throwOnTimeout, we throw the FunctionTimeoutException.
-            //      b. If !throwOnTimeout, wait for the task to complete.
-
-            // Start the invokeTask.
             Task<object> invokeTask = invoker.InvokeAsync(parameterHelper.JobInstance, invokeParameters);
 
-            // Combine #1 and #2 with a timeout task (handled by this method).
-            // functionCancellationTokenSource.Token is passed to each function that requests it, so we need to call Cancel() on it
-            // if there is a timeout.
-            bool isTimeout = await TryHandleTimeoutAsync(invokeTask, functionCancellationTokenSource.Token, throwOnTimeout, timeoutTokenSource.Token,
-                timerInterval, instance, () => functionCancellationTokenSource.Cancel());
-
-            // #2 occurred. If we're going to throwOnTimeout, watch for a timeout while we wait for invokeTask to complete.
-            if (throwOnTimeout && !isTimeout && functionCancellationTokenSource.IsCancellationRequested)
+            if (timerInterval > TimeSpan.Zero)
             {
-                await TryHandleTimeoutAsync(invokeTask, CancellationToken.None, throwOnTimeout, timeoutTokenSource.Token, timerInterval, instance, null);
+                // There are three ways the function can complete:
+                //   1. The invokeTask itself completes first.
+                //   2. A cancellation is requested (by host.Stop(), for example).
+                //      a. Continue waiting for the invokeTask to complete. Either #1 or #3 will occur.
+                //   3. A timeout fires.
+                //      a. If throwOnTimeout, we throw the FunctionTimeoutException.
+                //      b. If !throwOnTimeout, wait for the task to complete.
+
+                // Combine #1 and #2 with a timeout task (handled by this method).
+                // functionCancellationTokenSource.Token is passed to each function that requests it, so we need to call Cancel() on it
+                // if there is a timeout.
+                bool isTimeout = await TryHandleTimeoutAsync(invokeTask, functionCancellationTokenSource.Token, throwOnTimeout, timeoutTokenSource.Token,
+                    timerInterval, instance, () => functionCancellationTokenSource.Cancel());
+
+                // #2 occurred. If we're going to throwOnTimeout, watch for a timeout while we wait for invokeTask to complete.
+                if (throwOnTimeout && !isTimeout && functionCancellationTokenSource.IsCancellationRequested)
+                {
+                    await TryHandleTimeoutAsync(invokeTask, CancellationToken.None, throwOnTimeout, timeoutTokenSource.Token, timerInterval, instance, null);
+                }
             }
 
             object returnValue = await invokeTask;
@@ -718,7 +699,6 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
             return logEntry;
         }
 
-        // Called before function body is executed; after arguments are bound. 
         private Task NotifyPostBindAsync(FunctionInstanceLogEntry logEntry, IDictionary<string, string> arguments)
         {
             logEntry.Arguments = arguments;
@@ -727,7 +707,6 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
             return _functionEventCollector.AddAsync(logEntry);
         }
 
-        // Called after function completes. 
         private Task NotifyCompleteAsync(FunctionInstanceLogEntry instanceLogEntry, IDictionary<string, string> arguments, ExceptionDispatchInfo exceptionInfo)
         {
             if (instanceLogEntry == null)
@@ -735,16 +714,13 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
                 throw new ArgumentNullException(nameof(instanceLogEntry));
             }
 
-            instanceLogEntry.LiveTimer.Stop();
-
-            // log result            
+            instanceLogEntry.LiveTimer.Stop();   
             instanceLogEntry.EndTime = DateTime.UtcNow;
             instanceLogEntry.Duration = instanceLogEntry.LiveTimer.Elapsed;
             instanceLogEntry.Arguments = arguments;
 
             Debug.Assert(instanceLogEntry.IsCompleted);
 
-            // Log completed
             if (exceptionInfo != null)
             {
                 var ex = exceptionInfo.SourceException;
@@ -785,7 +761,6 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
             // state bag passed to all function filters
             private readonly IDictionary<string, object> _filterContextProperties = new Dictionary<string, object>();
 
-            // the return value of the function
             private object _returnValue;
 
             private bool _disposed;
@@ -1004,25 +979,14 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
 
             private string[] SortParameterNamesInStepOrder()
             {
-                string[] parameterNames = new string[_valueProviders.Count];
-                int index = 0;
+                string[] parameterNames = _valueProviders.Keys.ToArray();
 
-                foreach (string parameterName in _valueProviders.Keys)
+                if (parameterNames.Length > 1)
                 {
-                    parameterNames[index] = parameterName;
-                    index++;
+                    IValueProvider[] parameterValues = _valueProviders.Values.ToArray();
+                    Array.Sort(parameterValues, parameterNames, ValueBinderStepOrderComparer.Instance);
                 }
 
-                IValueProvider[] parameterValues = new IValueProvider[_valueProviders.Count];
-                index = 0;
-
-                foreach (IValueProvider parameterValue in _valueProviders.Values)
-                {
-                    parameterValues[index] = parameterValue;
-                    index++;
-                }
-
-                Array.Sort(parameterValues, parameterNames, ValueBinderStepOrderComparer.Instance);
                 return parameterNames;
             }
 

@@ -39,6 +39,7 @@ namespace Microsoft.Azure.WebJobs.Host.Indexers
         private readonly SharedQueueHandler _sharedQueue;
         private readonly TimeoutAttribute _defaultTimeout;
         private readonly bool _allowPartialHostStartup;
+        private readonly IServiceScopeFactory _serviceScopeFactory;
 
         public FunctionIndexer(
             ITriggerBindingProvider triggerBindingProvider,
@@ -47,6 +48,7 @@ namespace Microsoft.Azure.WebJobs.Host.Indexers
             IFunctionExecutor executor,
             SingletonManager singletonManager,
             ILoggerFactory loggerFactory,
+            IServiceScopeFactory serviceScopeFactory,
             INameResolver nameResolver = null,
             SharedQueueHandler sharedQueue = null,
             TimeoutAttribute defaultTimeout = null,
@@ -62,6 +64,7 @@ namespace Microsoft.Azure.WebJobs.Host.Indexers
             _sharedQueue = sharedQueue;
             _defaultTimeout = defaultTimeout;
             _allowPartialHostStartup = allowPartialHostStartup;
+            _serviceScopeFactory = serviceScopeFactory;
         }
 
         public async Task IndexTypeAsync(Type type, IFunctionIndexCollector index, CancellationToken cancellationToken)
@@ -313,7 +316,7 @@ namespace Microsoft.Azure.WebJobs.Host.Indexers
             }
             else
             {
-                IFunctionInstanceFactory instanceFactory = new FunctionInstanceFactory(new FunctionBinding(functionDescriptor, nonTriggerBindings, _singletonManager), invoker, functionDescriptor);
+                IFunctionInstanceFactory instanceFactory = new FunctionInstanceFactory(new FunctionBinding(functionDescriptor, nonTriggerBindings, _singletonManager), invoker, functionDescriptor, _serviceScopeFactory);
                 functionDefinition = new FunctionDefinition(functionDescriptor, instanceFactory, listenerFactory: null);
             }
 
@@ -332,7 +335,7 @@ namespace Microsoft.Azure.WebJobs.Host.Indexers
             IReadOnlyDictionary<string, IBinding> nonTriggerBindings, IFunctionInvokerEx invoker)
         {
             ITriggeredFunctionBinding<TTriggerValue> functionBinding = new TriggeredFunctionBinding<TTriggerValue>(descriptor, parameterName, triggerBinding, nonTriggerBindings, _singletonManager);
-            ITriggeredFunctionInstanceFactory<TTriggerValue> instanceFactory = new TriggeredFunctionInstanceFactory<TTriggerValue>(functionBinding, invoker, descriptor);
+            ITriggeredFunctionInstanceFactory<TTriggerValue> instanceFactory = new TriggeredFunctionInstanceFactory<TTriggerValue>(functionBinding, invoker, descriptor, _serviceScopeFactory);
             ITriggeredFunctionExecutor triggerExecutor = new TriggeredFunctionExecutor<TTriggerValue>(descriptor, _executor, instanceFactory);
             IListenerFactory listenerFactory = new ListenerFactory(descriptor, triggerExecutor, triggerBinding, _sharedQueue);
 

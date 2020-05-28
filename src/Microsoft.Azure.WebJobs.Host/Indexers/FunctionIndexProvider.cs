@@ -27,6 +27,7 @@ namespace Microsoft.Azure.WebJobs.Host.Indexers
         private readonly SharedQueueHandler _sharedQueue;
         private readonly TimeoutAttribute _defaultTimeout;
         private readonly bool _allowPartialHostStartup;
+        private readonly IServiceScopeFactory _serviceScopeFactory;
 
         private IFunctionIndex _index;
 
@@ -39,7 +40,8 @@ namespace Microsoft.Azure.WebJobs.Host.Indexers
             ILoggerFactory loggerFactory,
             SharedQueueHandler sharedQueue,
             IOptions<JobHostFunctionTimeoutOptions> timeoutOptions,
-            IOptions<JobHostOptions> hostOptions)
+            IOptions<JobHostOptions> hostOptions,
+            IServiceScopeFactory serviceScopeFactory)
         {
 
             _typeLocator = typeLocator ?? throw new ArgumentNullException(nameof(typeLocator));
@@ -49,6 +51,7 @@ namespace Microsoft.Azure.WebJobs.Host.Indexers
             _executor = executor ?? throw new ArgumentNullException(nameof(executor));
             _singletonManager = singletonManager ?? throw new ArgumentNullException(nameof(singletonManager));
             _sharedQueue = sharedQueue ?? throw new ArgumentNullException(nameof(sharedQueue));
+            _serviceScopeFactory = serviceScopeFactory ?? throw new ArgumentNullException(nameof(serviceScopeFactory));
             _loggerFactory = loggerFactory;
             _defaultTimeout = timeoutOptions.Value.ToAttribute();
             _allowPartialHostStartup = hostOptions.Value.AllowPartialHostStartup;
@@ -68,7 +71,7 @@ namespace Microsoft.Azure.WebJobs.Host.Indexers
         {
             FunctionIndex index = new FunctionIndex();
             IBindingProvider bindingProvider = _bindingProviderFactory;
-            FunctionIndexer indexer = new FunctionIndexer(_triggerBindingProvider, bindingProvider, _activator, _executor, _singletonManager, _loggerFactory, null, _sharedQueue, _defaultTimeout, _allowPartialHostStartup);
+            FunctionIndexer indexer = new FunctionIndexer(_triggerBindingProvider, bindingProvider, _activator, _executor, _singletonManager, _loggerFactory, _serviceScopeFactory, null, _sharedQueue, _defaultTimeout, _allowPartialHostStartup);
             IReadOnlyList<Type> types = _typeLocator.GetTypes();
 
             foreach (Type type in types)

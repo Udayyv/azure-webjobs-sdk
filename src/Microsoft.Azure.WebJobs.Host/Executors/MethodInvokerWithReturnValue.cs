@@ -15,10 +15,13 @@ namespace Microsoft.Azure.WebJobs.Host.Executors
             _lambda = lambda;
         }
 
-        public Task<TReturnValue> InvokeAsync(TReflected instance, object[] arguments)
+        public async Task<TReturnValue> InvokeAsync(TReflected instance, object[] arguments)
         {
+            await Task.Yield();
+
             TReturnValue result = _lambda.Invoke(instance, arguments);
-            return Task.FromResult(result);
+
+            return result;
         }
     }
 }

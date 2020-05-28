@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Reflection;
 using Microsoft.Azure.WebJobs.Host.Protocols;
@@ -12,6 +13,7 @@ namespace Microsoft.Azure.WebJobs.Host.Indexers
     {
         private readonly IDictionary<string, IFunctionDefinition> _functionsById;
         private readonly IDictionary<MethodInfo, IFunctionDefinition> _functionsByMethod;
+        private readonly ConcurrentDictionary<string, IFunctionDefinition> _functionsByName = new ConcurrentDictionary<string, IFunctionDefinition>(StringComparer.OrdinalIgnoreCase);
         private readonly ICollection<FunctionDescriptor> _functionDescriptors;
 
         public FunctionIndex()
@@ -48,19 +50,20 @@ namespace Microsoft.Azure.WebJobs.Host.Indexers
 
         public IFunctionDefinition LookupByName(string name)
         {
-            // For compat, accept either the short name ("Class.Name") or log name (just "Name")
-            foreach (var items in _functionDescriptors)
+            return _functionsByName.GetOrAdd(name, n =>
             {
-                if (string.Equals(items.ShortName, name, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(items.LogName, name, StringComparison.OrdinalIgnoreCase))
+                foreach (var items in _functionDescriptors)
                 {
-                    var id = items.Id;
-                    return Lookup(id);
+                    // For compat, accept either the short name ("Class.Name") or log name (just "Name")
+                    if (string.Equals(items.ShortName, name, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(items.LogName, name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Lookup(items.Id);
+                    }
                 }
-            }
- 
-            // Not found.
-            return null;
+
+                return null;
+            });
         }        
 
         public IFunctionDefinition Lookup(MethodInfo method)

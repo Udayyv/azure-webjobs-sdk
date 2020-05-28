@@ -58,11 +58,12 @@ namespace Microsoft.Azure.WebJobs.Host.UnitTests
             IJobActivator activator = host.Services.GetService<IJobActivator>();
             extensionRegistry = host.Services.GetService<IExtensionRegistry>();
             SingletonManager singletonManager = host.Services.GetService<SingletonManager>();
+            var serviceScopeFactory = host.Services.GetService<IServiceScopeFactory>();
 
             IFunctionExecutor executor = host.Services.GetService<IFunctionExecutor>();
 
             // TODO: This should be using DI internally and not be so complicated to construct
-            return new FunctionIndexer(triggerBindingProvider, bindingProvider, activator, executor, singletonManager, loggerFactory);
+            return new FunctionIndexer(triggerBindingProvider, bindingProvider, activator, executor, singletonManager, loggerFactory, serviceScopeFactory);
         }
     }
 }
